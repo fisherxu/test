@@ -1,128 +1,152 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/dgrijalva/jwt-go"
-	"github.com/gorilla/context"
 	"github.com/gorilla/mux"
-	"github.com/mitchellh/mapstructure"
 )
 
-// User ...
-// Custom object which can be stored in the claims
-type User struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
-}
-
-// AuthToken ...
-// This is what is retured to the user
-type AuthToken struct {
-	TokenType string `json:"token_type"`
-	Token     string `json:"access_token"`
-	ExpiresIn int64  `json:"expires_in"`
-}
-
-// AuthTokenClaim ...
-// This is the cliam object which gets parsed from the authorization header
-type AuthTokenClaim struct {
-	*jwt.StandardClaims
-	User
-}
-
-// ErrorMsg ...
-// Custom error object
-type ErrorMsg struct {
-	Message string `json:"message"`
-}
-
-func authenticateHandler(w http.ResponseWriter, req *http.Request) {
-	var user User
-	_ = json.NewDecoder(req.Body).Decode(&user)
-
-	expiresAt := time.Now().Add(time.Minute * 1).Unix()
+func generateToken() string {
+	expiresAt := time.Now().Add(time.Hour * 24).Unix()
 
 	token := jwt.New(jwt.SigningMethodHS256)
 
-	token.Claims = &AuthTokenClaim{
-		&jwt.StandardClaims{
-			ExpiresAt: expiresAt,
-		},
-		User{user.Username, user.Password},
+	token.Claims = jwt.StandardClaims{
+		ExpiresAt: expiresAt,
 	}
 
-	tokenString, error := token.SignedString([]byte("secret"))
-	if error != nil {
-		fmt.Println(error)
-	}
+	tokenString, _ := token.SignedString([]byte("secret"))
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(AuthToken{
-		Token:     tokenString,
-		TokenType: "Bearer",
-		ExpiresIn: expiresAt,
-	})
+	fmt.Println(tokenString)
+	return tokenString
 }
 
-func validateTokenMiddleware(next http.HandlerFunc) http.HandlerFunc {
-	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		authorizationHeader := req.Header.Get("authorization")
-		if authorizationHeader != "" {
-			bearerToken := strings.Split(authorizationHeader, " ")
-			if len(bearerToken) == 2 {
-				token, error := jwt.Parse(bearerToken[1], func(token *jwt.Token) (interface{}, error) {
-					if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-						return nil, fmt.Errorf("There was an error")
-					}
-					return []byte("secret"), nil
-				})
-				if error != nil {
-					json.NewEncoder(w).Encode(ErrorMsg{Message: error.Error()})
-					return
-				}
-				if token.Valid {
+func generateTokenTest() string {
+	expiresAt := time.Now().Add(time.Hour * 24).Unix()
 
-					var user User
-					mapstructure.Decode(token.Claims, &user)
+	token := jwt.New(jwt.SigningMethodHS256)
 
-					vars := mux.Vars(req)
-					name := vars["userId"]
-					if name != user.Username {
-						json.NewEncoder(w).Encode(ErrorMsg{Message: "Invalid authorization token - Does not match UserID"})
-						return
-					}
+	token.Claims = jwt.StandardClaims{
+		ExpiresAt: expiresAt,
+	}
 
-					context.Set(req, "decoded", token.Claims)
-					next(w, req)
-				} else {
-					json.NewEncoder(w).Encode(ErrorMsg{Message: "Invalid authorization token"})
-				}
-			} else {
-				json.NewEncoder(w).Encode(ErrorMsg{Message: "Invalid authorization token"})
-			}
-		} else {
-			json.NewEncoder(w).Encode(ErrorMsg{Message: "An authorization header is required"})
+	tokenString, _ := token.SignedString([]byte("secretTest"))
+
+	return tokenString
+}
+
+func refreshToken() string {
+	claims := &jwt.StandardClaims{}
+	expirationTime := time.Now().Add(5 * time.Minute)
+	claims.ExpiresAt = expirationTime.Unix()
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	tokenString, _ := token.SignedString([]byte("secret"))
+	return tokenString
+}
+
+func verifyToken(w http.ResponseWriter, r *http.Request) {
+	authorizationHeader := r.Header.Get("authorization")
+	if authorizationHeader == "" {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(fmt.Sprintf("Invalid authorization token")))
+		return
+	}
+	bearerToken := strings.Split(authorizationHeader, " ")
+	if len(bearerToken) != 2 {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(fmt.Sprintf("Invalid authorization token")))
+		return
+	}
+	token, err := jwt.Parse(bearerToken[1], func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("There was an error")
 		}
+		return []byte("secret"), nil
 	})
+	if err != nil {
+		if err == jwt.ErrSignatureInvalid {
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(fmt.Sprintf("Invalid authorization token")))
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(fmt.Sprintf("Invalid authorization token")))
+		return
+	}
+	if !token.Valid {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(fmt.Sprintf("Invalid authorization token")))
+		return
+	}
+	w.Write([]byte(fmt.Sprintf("Welcome")))
 }
 
-func users(w http.ResponseWriter, req *http.Request) {
-	decoded := context.Get(req, "decoded")
-	var user User
-	mapstructure.Decode(decoded.(jwt.MapClaims), &user)
-	json.NewEncoder(w).Encode(user)
+func getCA(w http.ResponseWriter, r *http.Request) {
+	w.Write([]byte(fmt.Sprintf("CA will be returned")))
 }
 
 func main() {
+	generateToken()
+
+	t := time.NewTicker(time.Hour * 12)
+	go func() {
+		for {
+			select {
+			case <-t.C:
+				refreshToken()
+			}
+		}
+	}()
+
 	router := mux.NewRouter()
-	fmt.Println("Application Starting ...")
-	router.HandleFunc("/authenticate", authenticateHandler).Methods("POST")
-	router.HandleFunc("/users/{userId}/credentials", validateTokenMiddleware(users)).Methods("GET")
-	log.Fatal(http.ListenAndServe(":3000", router))
+	router.HandleFunc("/certs", verifyToken).Methods("GET")
+	router.HandleFunc("/ca", getCA).Methods("GET")
+	go func() {
+		log.Fatal(http.ListenAndServe(":3000", router))
+	}()
+
+	go func() {
+		time.Sleep(time.Second * 2)
+
+		client := &http.Client{}
+		req, _ := http.NewRequest("GET", "http://localhost:3000/certs", nil)
+
+		tokenString := generateToken()
+		// Create a Bearer string by appending string access token
+		var bearer = "Bearer " + tokenString
+		req.Header.Set("Authorization", bearer)
+
+		res, err := client.Do(req)
+
+		if err != nil {
+			fmt.Println("Error: %s", err.Error())
+		}
+
+		body, err := ioutil.ReadAll(res.Body)
+		if err != nil {
+			fmt.Println(err)
+		}
+		fmt.Println(string(body))
+
+		req, _ = http.NewRequest("GET", "http://localhost:3000/ca", nil)
+		res, err = client.Do(req)
+
+		if err != nil {
+			fmt.Println("Error: %s", err.Error())
+		}
+
+		body, err = ioutil.ReadAll(res.Body)
+		if err != nil {
+			fmt.Println(err)
+		}
+		fmt.Println(string(body))
+
+	}()
+	time.Sleep(time.Hour * 30)
 }
